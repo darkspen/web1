@@ -1,60 +1,90 @@
 import './style.css'
-import typescriptLogo from './assets/typescript.svg'
-import viteLogo from './assets/vite.svg'
-import heroImg from './assets/hero.png'
-import { setupCounter } from './counter.ts'
+import type { Category } from './types'
+import { CATEGORIES } from './utils/categorize'
+import { createStore } from './utils/state'
+import { fetchHNCategory, resetSeenUrls } from './api/hn'
+import { fetchFeatured } from './api/rss'
+import { renderHeader, updateLastUpdated } from './components/header'
+import { renderCategorySection } from './components/categorySection'
 
-document.querySelector<HTMLDivElement>('#app')!.innerHTML = `
-<section id="center">
-  <div class="hero">
-    <img src="${heroImg}" class="base" width="170" height="179">
-    <img src="${typescriptLogo}" class="framework" alt="TypeScript logo"/>
-    <img src="${viteLogo}" class="vite" alt="Vite logo" />
-  </div>
-  <div>
-    <h1>Get started</h1>
-    <p>Edit <code>src/main.ts</code> and save to test <code>HMR</code></p>
-  </div>
-  <button id="counter" type="button" class="counter"></button>
-</section>
+const categoriesStore = createStore<Category[]>(
+  CATEGORIES.map(cfg => ({
+    key: cfg.key,
+    label: cfg.label,
+    emoji: cfg.emoji,
+    color: cfg.color,
+    items: [],
+    loading: true,
+    error: null,
+  }))
+)
 
-<div class="ticks"></div>
+function updateCategory(key: string, patch: Partial<Category>) {
+  categoriesStore.set(
+    categoriesStore.get().map(c => (c.key === key ? { ...c, ...patch } : c))
+  )
+}
 
-<section id="next-steps">
-  <div id="docs">
-    <svg class="icon" role="presentation" aria-hidden="true"><use href="/icons.svg#documentation-icon"></use></svg>
-    <h2>Documentation</h2>
-    <p>Your questions, answered</p>
-    <ul>
-      <li>
-        <a href="https://vite.dev/" target="_blank">
-          <img class="logo" src="${viteLogo}" alt="" />
-          Explore Vite
-        </a>
-      </li>
-      <li>
-        <a href="https://www.typescriptlang.org" target="_blank">
-          <img class="button-icon" src="${typescriptLogo}" alt="">
-          Learn more
-        </a>
-      </li>
-    </ul>
-  </div>
-  <div id="social">
-    <svg class="icon" role="presentation" aria-hidden="true"><use href="/icons.svg#social-icon"></use></svg>
-    <h2>Connect with us</h2>
-    <p>Join the Vite community</p>
-    <ul>
-      <li><a href="https://github.com/vitejs/vite" target="_blank"><svg class="button-icon" role="presentation" aria-hidden="true"><use href="/icons.svg#github-icon"></use></svg>GitHub</a></li>
-      <li><a href="https://chat.vite.dev/" target="_blank"><svg class="button-icon" role="presentation" aria-hidden="true"><use href="/icons.svg#discord-icon"></use></svg>Discord</a></li>
-      <li><a href="https://x.com/vite_js" target="_blank"><svg class="button-icon" role="presentation" aria-hidden="true"><use href="/icons.svg#x-icon"></use></svg>X.com</a></li>
-      <li><a href="https://bsky.app/profile/vite.dev" target="_blank"><svg class="button-icon" role="presentation" aria-hidden="true"><use href="/icons.svg#bluesky-icon"></use></svg>Bluesky</a></li>
-    </ul>
-  </div>
-</section>
+function renderSection(category: Category) {
+  const el = document.getElementById(`category-${category.key}`)
+  if (el) {
+    el.outerHTML = renderCategorySection(category)
+    attachRetryListeners()
+  }
+}
 
-<div class="ticks"></div>
-<section id="spacer"></section>
-`
+function attachRetryListeners() {
+  document.querySelectorAll<HTMLButtonElement>('.retry-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const key = btn.dataset.category
+      if (key) retryCategory(key)
+    })
+  })
+}
 
-setupCounter(document.querySelector<HTMLButtonElement>('#counter')!)
+async function retryCategory(key: string) {
+  const cfg = CATEGORIES.find(c => c.key === key)
+  if (!cfg) return
+  updateCategory(key, { loading: true, error: null })
+  renderSection(categoriesStore.get().find(c => c.key === key)!)
+  await loadCategory(cfg.key, cfg.query)
+}
+
+async function loadCategory(key: string, query: string) {
+  try {
+    const items = key === 'featured' ? await fetchFeatured() : await fetchHNCategory(query)
+    updateCategory(key, { items, loading: false, error: null })
+  } catch (err) {
+    updateCategory(key, { loading: false, error: String(err) })
+  }
+  const category = categoriesStore.get().find(c => c.key === key)!
+  renderSection(category)
+}
+
+async function loadAll() {
+  resetSeenUrls()
+
+  categoriesStore.set(
+    categoriesStore.get().map(c => ({ ...c, items: [], loading: true, error: null }))
+  )
+
+  const app = document.getElementById('app')!
+  app.innerHTML =
+    renderHeader(null) +
+    '<main class="main-content">' +
+    categoriesStore.get().map(renderCategorySection).join('') +
+    '</main>'
+
+  attachRetryListeners()
+
+  document.getElementById('refresh-btn')?.addEventListener('click', () => loadAll())
+
+  await Promise.allSettled(
+    CATEGORIES.map(cfg => loadCategory(cfg.key, cfg.query))
+  )
+
+  updateLastUpdated(new Date())
+}
+
+loadAll()
+setInterval(loadAll, 5 * 60 * 1000)
